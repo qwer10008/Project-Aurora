@@ -4,7 +4,7 @@
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.portWin": "detect",
+  "idf.portWin": "COM3",
   "idf.currentSetup": "D:/APP/Espressif/frameworks/esp-idf-v5.5.4/",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"
@@ -15,5 +15,5 @@
     "--query-driver=**",
     "--compile-commands-dir=d:\\Engineering\\Project Aurora\\build"
   ],
-  "idf.flashType": "JTAG"
+  "idf.flashType": "UART"
 }
