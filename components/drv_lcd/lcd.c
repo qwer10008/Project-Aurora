@@ -17,9 +17,9 @@ static const char *TAG = "lcd";
 
 esp_lcd_panel_handle_t lcd_init(void)
 {
-    ESP_LOGI(TAG, "初始化 RGB 面板（背光暂不点亮）...");
+    ESP_LOGI(TAG, "初始化背光...");
     gpio_set_direction(LCD_BL_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(LCD_BL_GPIO, 0);   // 背光先关着，等 LVGL 首帧就绪后再点亮
+    gpio_set_level(LCD_BL_GPIO, 1);   // 先点亮背光
 
     esp_lcd_rgb_panel_config_t cfg = {
         .clk_src = LCD_CLK_SRC_PLL160M,

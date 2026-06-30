@@ -1,102 +1,117 @@
 /*
- * Project Aurora — 智能闹钟
- * main.c：硬件初始化 → UI 初始化 → 主循环（LVGL 驱动 + RTC 读取 + 闹钟 + 触摸）
- *
- * 初始化顺序（每一步都有讲究）：
- *   1. storage_init()     → NVS，最早，后续组件可能读写配置
- *   2. ds3231_init()       → I2C 总线（GPIO41+42），触摸和 RTC 共用
- *   3. audio_init()        → I2S，独立接口，不受 I2C/LCD 影响
- *   4. touch_init()        → GT911（I2C），必须在 LCD 之前！
- *   5. lcd_init()          → RGB 面板，背光暂不点亮
- *   6. ui_init(panel)      → LVGL 初始化 + 渲染首帧到帧缓冲
- *   7. lcd_backlight_on()  → 首帧就绪，点亮背光！
+ * 完全复用 GitHub 屏幕测试代码 (commit 72ba989)
+ * 彩条测试：红/绿/蓝三色，验证 LCD 基本功能
  */
+#include <stdio.h>
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_lcd_panel_rgb.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_log.h"
 
-/* === 头文件 === */
-#include "../components/drv_lcd/lcd.h"           // lcd_init()、lcd_get_fb()、lcd_backlight_on()
-#include "../components/drv_rtc/rtc.h"           // ds3231_init()、ds3231_read_time()
-#include "../components/drv_audio/audio.h"       // audio_init()、audio_play_tone()
-#include "../components/drv_touch/touch.h"       // touch_init()、touch_read()
-#include "../components/drv_storage/storage.h"   // storage_init()、storage_load_alarm()
-#include "../components/drv_ui/ui.h"             // ui_init()
-#include "lvgl.h"                                // lv_label_create()、lv_timer_handler() 等
-#include "esp_log.h"                             // ESP_LOGI()、ESP_LOGE()
-#include "freertos/FreeRTOS.h"                   // vTaskDelay()
-#include "freertos/task.h"                       // pdMS_TO_TICKS()
-#include <stdio.h>                               // printf()、snprintf()
-#include <string.h>                              // snprintf()
+static const char *TAG = "lcd_test";
 
-static const char *TAG = "main";
-static esp_lcd_panel_handle_t panel = NULL;      // LCD 面板句柄
+#define LCD_H_RES        800
+#define LCD_V_RES        480
+#define LCD_PCLK_HZ      (20 * 1000 * 1000)
+#define LCD_HSYNC_PW     48
+#define LCD_HSYNC_BP     88
+#define LCD_HSYNC_FP     40
+#define LCD_VSYNC_PW     3
+#define LCD_VSYNC_BP     32
+#define LCD_VSYNC_FP     13
 
-/* === 主函数 === */
 void app_main(void)
 {
-    // ==== 第 1 步：初始化硬件 ====
-    ESP_LOGI(TAG, "storage_init...");
-    storage_init();               // NVS——最早
+    ESP_LOGI(TAG, "初始化 RGB LCD...");
 
-    ESP_LOGI(TAG, "ds3231_init...");
-    ds3231_init();                 // I2C 总线 + DS3231M
+    // 背光拉高
+    gpio_set_direction(38, GPIO_MODE_OUTPUT);
+    gpio_set_level(38, 1);
 
-    ESP_LOGI(TAG, "audio_init...");
-    audio_init();                  // I2S 喇叭
+    // 配置 RGB 面板
+    esp_lcd_rgb_panel_config_t rgb_config = {
+        .clk_src = LCD_CLK_SRC_PLL160M,
+        .data_width = 16,
+        .psram_trans_align = 64,
+        .num_fbs = 1,
+        .bounce_buffer_size_px = 4800,
+        .timings = {
+            .pclk_hz = LCD_PCLK_HZ,
+            .h_res = LCD_H_RES,
+            .v_res = LCD_V_RES,
+            .hsync_pulse_width = LCD_HSYNC_PW,
+            .hsync_back_porch = LCD_HSYNC_BP,
+            .hsync_front_porch = LCD_HSYNC_FP,
+            .vsync_pulse_width = LCD_VSYNC_PW,
+            .vsync_back_porch = LCD_VSYNC_BP,
+            .vsync_front_porch = LCD_VSYNC_FP,
+            .flags.pclk_active_neg = 1,
+        },
+        .hsync_gpio_num = 8,
+        .vsync_gpio_num = 6,
+        .de_gpio_num = 15,
+        .pclk_gpio_num = 14,
+        .disp_gpio_num = -1,
+        .data_gpio_nums = {
+            9, 10, 11, 12, 13, 3, 46, 16,
+            17, 18, 40, 21, 47, 48, 45, 39,
+        },
+        .flags.fb_in_psram = 1,
+    };
 
-    ESP_LOGI(TAG, "touch_init...");
-    touch_init();                  // GT911 触摸（I2C，必须在 LCD 之前！）
-
-    ESP_LOGI(TAG, "lcd_init...");
-    panel = lcd_init();            // RGB 面板（背光此时还是灭的）
-
-    // ==== 第 2 步：LVGL 初始化 + 画首帧 ====
-    ESP_LOGI(TAG, "ui_init...");
-    ui_init(panel);                // LVGL 接管帧缓冲，渲染默认界面
-
-    // ==== 第 3 步：创建 UI 控件（在首帧里）====
-    lv_obj_t *scr = lv_screen_active();
-
-    lv_obj_t *time_label = lv_label_create(scr);
-    lv_label_set_text(time_label, "00:00:00");
-    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(time_label, lv_color_black(), 0);
-    lv_obj_center(time_label);
-
-    lv_obj_t *alarm_label = lv_label_create(scr);
-    lv_label_set_text(alarm_label, "Alarm 07:00");
-    lv_obj_set_style_text_font(alarm_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(alarm_label, lv_color_black(), 0);
-    lv_obj_align(alarm_label, LV_ALIGN_BOTTOM_MID, 0, -30);
-
-    // ==== 第 4 步：强制 LVGL 渲染首帧到帧缓冲（背光还没亮）====
-    ESP_LOGI(TAG, "渲染首帧...");
-    lv_timer_handler();           // LVGL 把标签画到帧缓冲
-    lv_timer_handler();           // 再刷一轮确保 flush 完成
-
-    // ==== 第 5 步：点亮背光，再刷一帧确保稳定 ====
-    ESP_LOGI(TAG, "lcd_backlight_on...");
-    lcd_backlight_on();
-    lv_timer_handler();           // 背光点亮后再刷一次
-    lv_timer_handler();           // 再来一次确保 flush 完成
-    rtc_time_t t;
-    if (!ds3231_read_time(&t)) {
-        t = (rtc_time_t){0, 30, 7, 30, 6, 26};  // 2026-06-30 07:30:00
-        ds3231_write_time(&t);
+    esp_lcd_panel_handle_t panel_handle = NULL;
+    esp_err_t err = esp_lcd_new_rgb_panel(&rgb_config, &panel_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "RGB 面板创建失败: %s", esp_err_to_name(err));
+        return;
     }
 
-    printf("\n=== Project Aurora ===\n");
-    ESP_LOGI(TAG, "进入主循环（最简测试：只跑 LVGL，不读 RTC）");
+    err = esp_lcd_panel_reset(panel_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "复位失败: %s", esp_err_to_name(err));
+    }
 
-    // ==== 最简测试主循环 ====
-    // 目的：确认 LVGL 渲染能否稳定保持，排除 RTC/闹钟/触摸逻辑的干扰
-    int loop_count = 0;
-    while (1) {
-        lv_timer_handler();          // 驱动 LVGL
-        vTaskDelay(pdMS_TO_TICKS(5)); // 5ms 间隔
+    // ★ 先获取帧缓冲、填好数据，再初始化面板 ★
+    void *fb = NULL;
+    err = esp_lcd_rgb_panel_get_frame_buffer(panel_handle, 1, &fb);
+    if (err != ESP_OK || fb == NULL) {
+        ESP_LOGE(TAG, "帧缓冲失败: %s", esp_err_to_name(err));
+        return;
+    }
 
-        // 每 200 次循环（约 1 秒）打印一次心跳，确认主循环没死
-        if (++loop_count % 200 == 0) {
-            printf(".");
-            fflush(stdout);
+    uint16_t *buf = (uint16_t *)fb;
+    int stripe_w = LCD_H_RES / 3;
+
+    for (int y = 0; y < LCD_V_RES; y++) {
+        for (int x = 0; x < LCD_H_RES; x++) {
+            uint16_t color;
+            if (x < stripe_w) {
+                color = 0xF800;   // 红色
+            } else if (x < stripe_w * 2) {
+                color = 0x07E0;   // 绿色
+            } else {
+                color = 0x001F;   // 蓝色
+            }
+            buf[y * LCD_H_RES + x] = color;
         }
+    }
+
+    ESP_LOGI(TAG, "彩条已写入，启动面板");
+
+    // 缓冲填好了，现在启动 RGB 输出
+    err = esp_lcd_panel_init(panel_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "面板初始化失败: %s", esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI(TAG, "面板正在输出");
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        printf(".");
+        fflush(stdout);
     }
 }
