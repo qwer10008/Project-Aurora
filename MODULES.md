@@ -139,7 +139,48 @@ uint16_t storage_load_alarm(void);                // 读取闹钟时间，默认
 
 ---
 
+## components/drv_ui/ — LVGL 图形库对接层
+
+| 文件 | 说明 |
+|------|------|
+| ui.h | 公开接口：`ui_init()` |
+| ui.c | 实现：LVGL 初始化 + LCD flush 回调 + 触摸输入 + 滴答定时器 |
+| CMakeLists.txt | 组件注册，依赖 lvgl、drv_lcd、drv_touch、esp_timer |
+
+**硬件**：无（纯软件层，对接 drv_lcd 的帧缓冲和 drv_touch 的触摸数据）。
+
+**公开接口**：
+```c
+void ui_init(esp_lcd_panel_handle_t panel);  // 初始化 LVGL，接管 LCD 帧缓冲 + 注册触摸输入
+```
+
+**依赖**：
+- `lvgl/lvgl` (v9.x，通过 IDF 组件管理器下载)
+- drv_lcd — `lcd_get_fb()` 获取帧缓冲给 LVGL 当画布
+- drv_touch — `touch_read()` 喂给 LVGL 输入系统
+- `esp_timer` — 5ms 滴答定时器驱动 LVGL 内部时钟
+
+**内部细节**：
+- DIRECT 渲染模式：LVGL 直接写入 LCD 帧缓冲，零拷贝
+- 单缓冲（num_fbs=1）：画面更新可能有轻微撕裂，省 768KB PSRAM
+- 5ms 硬件定时器调用 `lv_tick_inc(5)` 驱动 LVGL 动画和定时器
+- 触摸数据通过 `lv_indev_set_read_cb()` 注册到 LVGL 输入系统
+
+**当前状态**：编译通过，等待烧录验证屏幕显示。
+
+---
+
 ## 组件依赖关系图
+
+```
+main.c
+  ├── drv_storage (NVS 初始化)
+  ├── drv_rtc     (I2C 总线 + DS3231M 操作)
+  ├── drv_audio   (I2S 音频输出)
+  ├── drv_touch   (GT911 触摸 → 依赖 drv_rtc 初始化的 I2C)
+  ├── drv_lcd     (RGB 面板 + 背光)
+  └── drv_ui      (LVGL 图形库 → 依赖 drv_lcd + drv_touch + lvgl)
+```
 
 ```
 main.c
