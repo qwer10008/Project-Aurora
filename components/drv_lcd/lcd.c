@@ -13,12 +13,13 @@ static const char *TAG = "lcd";
 #define LCD_VSYNC_PW     3
 #define LCD_VSYNC_BP     32
 #define LCD_VSYNC_FP     13
+#define LCD_BL_GPIO      38    // 背光控制引脚
 
 esp_lcd_panel_handle_t lcd_init(void)
 {
-    ESP_LOGI(TAG, "初始化背光...");
-    gpio_set_direction(38, GPIO_MODE_OUTPUT);
-    gpio_set_level(38, 1);
+    ESP_LOGI(TAG, "初始化 RGB 面板（背光暂不点亮）...");
+    gpio_set_direction(LCD_BL_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(LCD_BL_GPIO, 0);   // 背光先关着，等 LVGL 首帧就绪后再点亮
 
     esp_lcd_rgb_panel_config_t cfg = {
         .clk_src = LCD_CLK_SRC_PLL160M,
@@ -82,8 +83,14 @@ esp_lcd_panel_handle_t lcd_init(void)
         ESP_LOGE(TAG, "面板初始化失败: %s", esp_err_to_name(err));
         return NULL;
     }
-    ESP_LOGI(TAG, "LCD 初始化完成");
+    ESP_LOGI(TAG, "RGB 面板初始化完成");
     return panel;
+}
+
+void lcd_backlight_on(void)
+{
+    gpio_set_level(LCD_BL_GPIO, 1);   // 点亮背光
+    ESP_LOGI(TAG, "背光已点亮");
 }
 
 void *lcd_get_fb(esp_lcd_panel_handle_t panel)
