@@ -7,7 +7,7 @@ static const char *TAG = "rtc";
 #define I2C_PORT     I2C_NUM_0
 #define I2C_SDA      41
 #define I2C_SCL      42
-#define I2C_FREQ     50000
+#define I2C_FREQ     10000
 #define DS3231_ADDR  0x68
 
 static bool i2c_installed = false;
