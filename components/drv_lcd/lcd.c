@@ -1,9 +1,11 @@
-#include "lcd.h"
+﻿#include "lcd.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_cache.h"
 
 static const char *TAG = "lcd";
 
+/* Original 20MHz timing — this worked before */
 #define LCD_H_RES        800
 #define LCD_V_RES        480
 #define LCD_PCLK_HZ      (20 * 1000 * 1000)
@@ -13,13 +15,18 @@ static const char *TAG = "lcd";
 #define LCD_VSYNC_PW     3
 #define LCD_VSYNC_BP     32
 #define LCD_VSYNC_FP     13
-#define LCD_BL_GPIO      38    // 背光控制引脚
+#define LCD_BL_GPIO      38
 
 esp_lcd_panel_handle_t lcd_init(void)
 {
-    ESP_LOGI(TAG, "初始化背光...");
+    int h_total = LCD_H_RES + LCD_HSYNC_PW + LCD_HSYNC_BP + LCD_HSYNC_FP;
+    int v_total = LCD_V_RES + LCD_VSYNC_PW + LCD_VSYNC_BP + LCD_VSYNC_FP;
+    ESP_LOGI(TAG, "Timing: %dx%d PCLK=%dM H=%d V=%d -> ~%dfps",
+             LCD_H_RES, LCD_V_RES, LCD_PCLK_HZ/1000000,
+             h_total, v_total, LCD_PCLK_HZ/(h_total*v_total));
+
     gpio_set_direction(LCD_BL_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(LCD_BL_GPIO, 1);   // 先点亮背光
+    gpio_set_level(LCD_BL_GPIO, 0);
 
     esp_lcd_rgb_panel_config_t cfg = {
         .clk_src = LCD_CLK_SRC_PLL160M,
@@ -54,51 +61,33 @@ esp_lcd_panel_handle_t lcd_init(void)
     esp_lcd_panel_handle_t panel = NULL;
     esp_err_t err = esp_lcd_new_rgb_panel(&cfg, &panel);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "RGB 面板创建失败: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "RGB panel create failed: %s", esp_err_to_name(err));
         return NULL;
     }
+    esp_lcd_panel_reset(panel);
 
-    err = esp_lcd_panel_reset(panel);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "复位失败: %s", esp_err_to_name(err));
-    }
-
-    // 先获取帧缓冲、填好数据，再初始化面板
     void *fb = NULL;
     err = esp_lcd_rgb_panel_get_frame_buffer(panel, 1, &fb);
-    if (err != ESP_OK || fb == NULL) {
-        ESP_LOGE(TAG, "帧缓冲失败: %s", esp_err_to_name(err));
-        return NULL;
+    if (err == ESP_OK && fb != NULL) {
+        memset(fb, 0xFF, LCD_H_RES * LCD_V_RES * 2);
+        esp_cache_msync(fb, LCD_H_RES * LCD_V_RES * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        ESP_LOGI(TAG, "FB=%p filled white", fb);
     }
 
-    uint16_t *buf = (uint16_t *)fb;
-    for (int y = 0; y < LCD_V_RES; y++) {
-        for (int x = 0; x < LCD_H_RES; x++) {
-            buf[y * LCD_H_RES + x] = 0xFFFF;  // 白屏
-        }
-    }
-
-    err = esp_lcd_panel_init(panel);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "面板初始化失败: %s", esp_err_to_name(err));
-        return NULL;
-    }
-    ESP_LOGI(TAG, "RGB 面板初始化完成");
+    esp_lcd_panel_init(panel);
+    ESP_LOGI(TAG, "Panel init complete");
     return panel;
 }
 
 void lcd_backlight_on(void)
 {
-    gpio_set_level(LCD_BL_GPIO, 1);   // 点亮背光
-    ESP_LOGI(TAG, "背光已点亮");
+    gpio_set_level(LCD_BL_GPIO, 1);
+    ESP_LOGI(TAG, "backlight ON");
 }
 
 void *lcd_get_fb(esp_lcd_panel_handle_t panel)
 {
     void *fb = NULL;
-    esp_err_t err = esp_lcd_rgb_panel_get_frame_buffer(panel, 1, &fb);
-    if (err != ESP_OK || fb == NULL) {
-        ESP_LOGE(TAG, "获取帧缓冲失败");
-    }
+    esp_lcd_rgb_panel_get_frame_buffer(panel, 1, &fb);
     return fb;
 }
